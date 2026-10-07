@@ -1,0 +1,1025 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Chicago Dog Stack</title>
+<meta name="description" content="Catch the falling Chicago-dog toppings, stack them sky high, and never, ever catch the ketchup.">
+<meta name="theme-color" content="#ffd23f">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Dog Stack">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+  :root { --bg: #fff6e6; --panel: #ffffff; --ink: #3b2416; --muted: #8a6d5a; --line: #f0dcc0; --mustard: #ffd23f; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --bg: #1d1712; --panel: #2a211a; --ink: #fbeee0; --muted: #c4a891; --line: #4a3a2c; }
+  }
+  :root[data-theme="dark"] { --bg: #1d1712; --panel: #2a211a; --ink: #fbeee0; --muted: #c4a891; --line: #4a3a2c; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; overflow: hidden; overscroll-behavior: none; }
+  body {
+    background: var(--bg); color: var(--ink);
+    font-family: Fredoka, "Comic Sans MS", system-ui, sans-serif;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+    padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right))
+             max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+    user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+  }
+  #game { display: block; border-radius: 18px; border: 3px solid var(--ink); touch-action: none; background: #8fd3ff; }
+  #fact {
+    display: flex; gap: 10px; align-items: center; height: 92px; overflow: hidden; padding: 6px 12px;
+    background: var(--panel); border: 3px solid var(--line); border-radius: 16px; font-size: 14px; line-height: 1.3;
+    transition: border-color .3s;
+  }
+  #fact.fresh { border-color: var(--mustard); }
+  #fact .bulb { font-size: 28px; }
+  #fact .count { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; }
+</style>
+</head>
+<body>
+<canvas id="game" aria-label="Chicago Dog Stack game. Swipe left and right to move the hot dog."></canvas>
+<div id="fact" role="status" aria-live="polite">
+  <span class="bulb">💡</span>
+  <span><span id="factText">Catch the glowing 💡 bubbles for Chicago and hot dog fun facts!</span><span class="count" id="factCount"></span></span>
+</div>
+<script>
+// ---------------------------------------------------------------------------
+// Storage helpers (browser storage can be unavailable; the game still works)
+// ---------------------------------------------------------------------------
+const store = {
+  get(k, fallback) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : fallback; } catch { return fallback; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+
+// ---------------------------------------------------------------------------
+// Screen and world
+// The world is the same 800x600 Chicago street as the desktop game; the phone
+// shows a portrait window onto it (x 160..640, y -200..600), so there is more
+// sky above for toppings to fall through.
+// ---------------------------------------------------------------------------
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const VW = 480, VH = 800;                // logical screen size (portrait 3:5)
+const W = 800, H = 600, GROUND = 572, SIDEWALK = 524;
+const CENTER_X = 400, TOP0 = -200;       // the default view: centered, showing 200px of extra sky
+const PLAY_MIN = 242, PLAY_MAX = 558;    // where the hot dog can go (the whole bun stays on screen)
+const INK = '#3b2416';
+const FONT = 'Fredoka, "Comic Sans MS", system-ui, sans-serif';
+const MOVE_SPEED = 520;                  // the hot dog also speeds up with each level, see moveSpeed()
+const MAX_STACK = 330;                   // px of toppings to reach the finish line and serve the dog (one dog per level)
+const SPACE_Y = -900;                    // world height where the endless level's sky turns into outer space
+let XMIN = 160, XMAX = 640;              // world x range currently on screen (wider when the endless level zooms out)
+const BASE_FALL = 185, BASE_SPAWN = 1.1;
+const factEl = document.getElementById('fact');
+
+// Fit the 3:5 game into whatever screen this is, leaving room for the fact strip.
+function fitCanvas() {
+  const pad = 16, strip = factEl.offsetHeight + 8;
+  const availW = window.innerWidth - pad, availH = window.innerHeight - pad - strip;
+  const cssW = Math.floor(Math.min(availW, availH * VW / VH));
+  const cssH = Math.floor(cssW * VH / VW);
+  const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+  canvas.style.width = cssW + 'px'; canvas.style.height = cssH + 'px';
+  canvas.width = Math.round(cssW * dpr); canvas.height = Math.round(cssH * dpr);
+  ctx.setTransform(canvas.width / VW, 0, 0, canvas.height / VH, 0, 0);
+  factEl.style.width = cssW + 'px';
+}
+// --- tiny drawing helpers ---
+const rand = (a, b) => a + Math.random() * (b - a);
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+function circle(x, y, r, fill) { ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fillStyle = fill; ctx.fill(); }
+function ellipse(x, y, rx, ry) { ctx.beginPath(); ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2); }
+function rrect(x, y, w, h, r) { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); }
+function paint(fill, line = 3) {
+  ctx.fillStyle = fill; ctx.fill();
+  if (line) { ctx.strokeStyle = INK; ctx.lineWidth = line; ctx.lineJoin = 'round'; ctx.stroke(); }
+}
+function face(x, y, s = 1, mood = 'happy') {
+  ctx.globalAlpha = 0.45;
+  circle(x - 11 * s, y + 3 * s, 3 * s, '#ff7f9f'); circle(x + 11 * s, y + 3 * s, 3 * s, '#ff7f9f');
+  ctx.globalAlpha = 1;
+  circle(x - 6 * s, y - 1 * s, 2.4 * s, INK); circle(x + 6 * s, y - 1 * s, 2.4 * s, INK);
+  circle(x - 5.2 * s, y - 2 * s, 0.9 * s, '#fff'); circle(x + 6.8 * s, y - 2 * s, 0.9 * s, '#fff');
+  ctx.strokeStyle = INK; ctx.lineWidth = 1.8 * s; ctx.lineCap = 'round'; ctx.beginPath();
+  if (mood === 'worried') ctx.ellipse(x, y + 4 * s, 2.2 * s, 2.8 * s, 0, 0, Math.PI * 2);
+  else if (mood === 'sad') ctx.arc(x, y + 6 * s, 3.5 * s, 1.15 * Math.PI, 1.85 * Math.PI);
+  else ctx.arc(x, y + 1.5 * s, 3.5 * s, 0.15 * Math.PI, 0.85 * Math.PI);
+  ctx.stroke();
+}
+function text(str, x, y, size, fill = '#fff', align = 'center', stroke = INK) {
+  ctx.font = `700 ${size}px ${FONT}`; ctx.textAlign = align; ctx.textBaseline = 'middle';
+  ctx.lineJoin = 'round';
+  if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = size / 4; ctx.strokeText(str, x, y); }
+  ctx.fillStyle = fill; ctx.fillText(str, x, y);
+}
+
+// --- Chicago-dog toppings. Each draws centered on (x, y). ---
+const TOPPINGS = {
+  mustard: { name: 'Yellow mustard', h: 14, w: 96, draw(x, y, w) {
+    ctx.beginPath();
+    for (let i = 0; i <= 24; i++) {
+      const px = x - w / 2 + (w * i) / 24, py = y + Math.sin(i * 1.3) * 4;
+      i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+    }
+    ctx.lineCap = ctx.lineJoin = 'round';
+    ctx.strokeStyle = INK; ctx.lineWidth = 13; ctx.stroke();
+    ctx.strokeStyle = '#ffd23f'; ctx.lineWidth = 8; ctx.stroke();
+    face(x, y, 0.55);
+  } },
+  onions: { name: 'Chopped onions', h: 16, w: 90, draw(x, y, w) {
+    for (let i = 0; i < 5; i++) {
+      const cx = x - w / 2 + 9 + i * ((w - 18) / 4);
+      rrect(cx - 8, y - 8 + (i % 2 ? 2 : -1), 16, 14, 4); paint(i % 2 ? '#fffdf6' : '#f4f0ff', 2.5);
+    }
+    face(x, y - 1, 0.5);
+  } },
+  relish: { name: 'Neon green relish', h: 16, w: 94, draw(x, y, w) {
+    ctx.beginPath();
+    for (let i = 0; i <= 10; i++) ctx.arc(x - w / 2 + 8 + i * ((w - 16) / 10), y - 2, 7, Math.PI, 0);
+    ctx.lineTo(x + w / 2 - 1, y + 7); ctx.lineTo(x - w / 2 + 1, y + 7); ctx.closePath();
+    paint('#45e33a', 2.5);
+    for (let i = 0; i < 9; i++) circle(x - w / 2 + 10 + i * 9.5, y + 2 + (i % 2) * 2, 1.6, '#1f8f1a');
+    face(x, y, 0.55);
+  } },
+  tomato: { name: 'Tomato slices', h: 20, w: 96, draw(x, y, w) {
+    for (const dx of [-w / 4, w / 4]) {
+      ellipse(x + dx, y, w / 4 + 2, 10); paint('#ff4b4b', 2.5);
+      ellipse(x + dx, y, w / 4 - 6, 6); paint('#ff9b8f', 0);
+      for (const sx of [-8, 0, 8]) circle(x + dx + sx, y, 1.5, '#fff3c4');
+    }
+    face(x - w / 4, y - 1, 0.55);
+  } },
+  pickle: { name: 'Dill pickle spear', h: 20, w: 104, draw(x, y, w) {
+    rrect(x - w / 2, y - 10, w, 20, 10); paint('#5cb85c', 2.5);
+    rrect(x - w / 2 + 6, y - 6, w - 12, 5, 3); paint('#8fd88f', 0);
+    for (let i = 0; i < 7; i++) circle(x - w / 2 + 12 + i * 13, y + 4 + (i % 2) * 2, 1.6, '#2d7a2d');
+    face(x, y - 1, 0.6);
+  } },
+  peppers: { name: 'Sport peppers', h: 18, w: 92, draw(x, y, w) {
+    for (const [dx, rot] of [[-28, -0.25], [0, 0.1], [28, 0.3]]) {
+      ctx.save(); ctx.translate(x + dx, y); ctx.rotate(rot);
+      ctx.beginPath(); ctx.ellipse(0, 0, 15, 6.5, 0, 0, Math.PI * 2); paint('#8bc34a', 2.5);
+      ctx.beginPath(); ctx.moveTo(-15, 0); ctx.lineTo(-20, -4); ctx.strokeStyle = '#4e7a21'; ctx.lineWidth = 3; ctx.stroke();
+      ctx.restore();
+    }
+    face(x, y, 0.45);
+  } },
+  celery: { name: 'Celery salt', h: 28, w: 40, draw(x, y) {
+    rrect(x - 13, y - 6, 26, 20, 5); paint('#f9f6ee', 2.5);
+    rrect(x - 14, y - 14, 28, 9, 3); paint('#b9c3cc', 2.5);
+    for (const dx of [-6, 0, 6]) circle(x + dx, y - 10, 1.3, INK);
+    rrect(x - 9, y, 18, 9, 2); paint('#9fd36b', 0);
+    face(x, y + 4, 0.42);
+  } },
+  ketchup: { name: 'Ketchup', h: 46, w: 36, hazard: true, draw(x, y) {
+    rrect(x - 6, y - 23, 12, 10, 3); paint('#ffffff', 2.5);
+    ctx.beginPath(); ctx.moveTo(x - 7, y - 14); ctx.lineTo(x + 7, y - 14);
+    ctx.quadraticCurveTo(x + 17, y - 6, x + 16, y + 6); ctx.lineTo(x + 16, y + 20); ctx.quadraticCurveTo(x, y + 25, x - 16, y + 20);
+    ctx.lineTo(x - 16, y + 6); ctx.quadraticCurveTo(x - 17, y - 6, x - 7, y - 14); ctx.closePath();
+    paint('#e3262f', 2.5);
+    face(x, y + 6, 0.6, 'worried');
+    if (G.level > 0) return; // the "no ketchup" sign only appears on level 1, as a lesson
+    ctx.beginPath(); ctx.arc(x, y, 30, 0, Math.PI * 2);
+    ctx.moveTo(x - 21, y - 21); ctx.lineTo(x + 21, y + 21); ctx.strokeStyle = 'rgba(227,38,47,.8)'; ctx.lineWidth = 4; ctx.stroke();
+  } },
+  golden: { name: 'Golden frank', h: 22, w: 80, bonus: true, draw(x, y, w) {
+    rrect(x - w / 2, y - 11, w, 22, 11); paint('#ffc928', 2.5);
+    rrect(x - w / 2 + 8, y - 7, w - 16, 5, 3); paint('#fff1a8', 0);
+    face(x, y, 0.6);
+    const tw = Math.sin(G.t * 8);
+    text('✦', x - w / 2 - 6, y - 12 + tw * 2, 14, '#fff7b0', 'center', null);
+    text('✦', x + w / 2 + 6, y + 8 - tw * 2, 12, '#fff7b0', 'center', null);
+  } },
+};
+const NORMAL = ['mustard', 'onions', 'relish', 'tomato', 'pickle', 'peppers', 'celery'];
+
+// --- the hot dog you steer ---
+function drawDog(x, mood) {
+  const bob = Math.abs(G.vx) > 30 ? Math.sin(G.t * 22) * 1.5 : 0;
+  for (const dx of [-32, 32]) { ellipse(x + dx + (G.vx > 0 ? 3 : G.vx < 0 ? -3 : 0), GROUND - 3, 13, 6); paint('#a0522d', 2.5); }
+  ellipse(x, GROUND - 26 + bob, 70, 20); paint('#f2b25c');
+  rrect(x - 82, GROUND - 46 + bob, 164, 24, 12); paint('#c8553d');
+  rrect(x - 72, GROUND - 42 + bob, 144, 5, 3); paint('#e98a6d', 0);
+  face(x, GROUND - 35 + bob, 0.9, mood);
+  ctx.beginPath(); ctx.ellipse(x, GROUND - 22 + bob, 74, 16, 0, 0, Math.PI); ctx.closePath(); paint('#f6c27a');
+  for (let i = 0; i < 14; i++) circle(x - 56 + (i * 37) % 112, GROUND - 16 + bob + ((i * 7) % 8), 1.3, INK);
+}
+
+// ---------------------------------------------------------------------------
+// Levels: Chicago landmarks
+// ---------------------------------------------------------------------------
+function seeded(seed) { return () => ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646; }
+function sky(top, bottom) {
+  const g = ctx.createLinearGradient(0, TOP0, 0, SIDEWALK); g.addColorStop(0, top); g.addColorStop(1, bottom);
+  ctx.fillStyle = g; ctx.fillRect(0, TOP0 - 20, W, H - TOP0 + 20);
+}
+function skyline(seed, color, baseY, minH, maxH, windows) {
+  const r = seeded(seed);
+  for (let x = XMIN - 10; x < XMAX;) {
+    const w = 30 + r() * 50, h = minH + r() * (maxH - minH);
+    ctx.fillStyle = color; ctx.fillRect(x, baseY - h, w, h + 2);
+    if (windows) for (let wy = baseY - h + 10; wy < baseY - 8; wy += 14)
+      for (let wx = x + 6; wx < x + w - 8; wx += 11) if (r() > 0.45) { ctx.fillStyle = windows; ctx.fillRect(wx, wy, 5, 7); }
+    x += w + 2 + r() * 6;
+  }
+}
+function cloud(x, y, s) {
+  ctx.globalAlpha = 0.95;
+  for (const [dx, dy, r] of [[-26, 6, 18], [0, -4, 24], [26, 6, 18], [0, 10, 18]]) circle(x + dx * s, y + dy * s, r * s, '#fff');
+  ctx.globalAlpha = 1;
+  face(x, y + 6 * s, 0.55 * s);
+}
+function clouds(seed) {
+  const r = seeded(seed);
+  for (let i = 0; i < 4; i++) {
+    const s = 0.7 + r() * 0.6, speed = 8 + r() * 10;
+    cloud(((r() * W + G.t * speed) % (W + 160)) - 80, -150 + r() * 300, s);
+  }
+}
+function sun(x, y) {
+  ctx.save(); ctx.translate(x, y); ctx.rotate(G.t * 0.2);
+  for (let i = 0; i < 12; i++) { ctx.rotate(Math.PI / 6); rrect(42, -4, 16, 8, 4); paint('#ffd23f', 0); }
+  ctx.restore();
+  ctx.beginPath(); ctx.arc(x, y, 36, 0, Math.PI * 2); paint('#ffe066');
+  face(x, y + 2, 1.3);
+}
+function sidewalk(color = '#d9d0c1', line = '#bfb3a0') {
+  ctx.fillStyle = color; ctx.fillRect(XMIN, SIDEWALK, XMAX - XMIN, H - SIDEWALK);
+  ctx.fillStyle = line; ctx.fillRect(XMIN, SIDEWALK, XMAX - XMIN, 5);
+  for (let x = Math.floor(XMIN / 80) * 80; x < XMAX; x += 80) ctx.fillRect(x, SIDEWALK + 5, 3, H - SIDEWALK);
+}
+function willis(x, base, color, lights) {
+  ctx.fillStyle = color;
+  ctx.fillRect(x, base - 300, 96, 300); ctx.fillRect(x, base - 350, 64, 50); ctx.fillRect(x + 32, base - 380, 32, 30);
+  ctx.strokeStyle = color; ctx.lineWidth = 4;
+  ctx.beginPath(); ctx.moveTo(x + 40, base - 380); ctx.lineTo(x + 40, base - 440); ctx.moveTo(x + 58, base - 380); ctx.lineTo(x + 58, base - 432); ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,.12)';
+  for (let wy = base - 290; wy < base - 10; wy += 12) ctx.fillRect(x + 4, wy, 88, 2);
+  if (lights && Math.sin(G.t * 3) > 0) { circle(x + 40, base - 440, 4, '#ff3b3b'); circle(x + 58, base - 432, 4, '#ff3b3b'); }
+}
+function hancock(x, base, color, lights) {
+  ctx.beginPath(); ctx.moveTo(x - 40, base); ctx.lineTo(x - 26, base - 300); ctx.lineTo(x + 26, base - 300); ctx.lineTo(x + 40, base); ctx.closePath();
+  ctx.fillStyle = color; ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,.22)'; ctx.lineWidth = 2;
+  for (let i = 0; i < 5; i++) {
+    const y1 = base - i * 60, y2 = base - (i + 1) * 60, w1 = 40 - i * 2.8, w2 = 40 - (i + 1) * 2.8;
+    ctx.beginPath(); ctx.moveTo(x - w1, y1); ctx.lineTo(x + w2, y2); ctx.moveTo(x + w1, y1); ctx.lineTo(x - w2, y2); ctx.stroke();
+  }
+  ctx.strokeStyle = color; ctx.lineWidth = 4;
+  ctx.beginPath(); ctx.moveTo(x - 12, base - 300); ctx.lineTo(x - 12, base - 370); ctx.moveTo(x + 12, base - 300); ctx.lineTo(x + 12, base - 370); ctx.stroke();
+  if (lights && Math.cos(G.t * 3) > 0) { circle(x - 12, base - 370, 4, '#ff3b3b'); circle(x + 12, base - 370, 4, '#ff3b3b'); }
+}
+function ferrisWheel(cx, cy, r, base, lights) {
+  ctx.strokeStyle = INK; ctx.lineWidth = 6;
+  ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx - r * 0.45, base); ctx.moveTo(cx, cy); ctx.lineTo(cx + r * 0.45, base); ctx.stroke();
+  const spin = G.t * 0.25, n = 16, colors = ['#e8483b', '#ffd23f', '#4cd137', '#3fa7ff', '#ff7fbf'];
+  ctx.lineWidth = 2; ctx.strokeStyle = lights ? '#ffe9a8' : '#ffffff';
+  for (let i = 0; i < n; i++) {
+    const a = spin + (i / n) * Math.PI * 2;
+    ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r); ctx.stroke();
+  }
+  ctx.lineWidth = 6; ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.strokeStyle = lights ? '#ffcf5a' : '#e8483b'; ctx.stroke();
+  for (let i = 0; i < n; i++) {
+    const a = spin + (i / n) * Math.PI * 2, gx = cx + Math.cos(a) * r, gy = cy + Math.sin(a) * r;
+    rrect(gx - 7, gy, 14, 12, 4); paint(colors[i % colors.length], 2);
+  }
+  ctx.beginPath(); ctx.arc(cx, cy, 14, 0, Math.PI * 2); paint('#ffd23f');
+  face(cx, cy + 1, 0.5);
+}
+
+const LEVELS = [
+  { name: 'The Loop', landmark: 'Willis Tower', draw() {
+    sky('#7cc8ff', '#d9f2ff'); sun(250, -90); clouds(3);
+    skyline(11, '#a9c6e8', SIDEWALK, 80, 200);
+    hancock(230, SIDEWALK, '#3b4157');
+    willis(520, SIDEWALK, '#2b2b36');
+    skyline(5, '#6f8fb8', SIDEWALK, 40, 120, 'rgba(255,255,255,.35)');
+    sidewalk();
+  } },
+  { name: 'Millennium Park', landmark: 'Cloud Gate (the Bean)', draw() {
+    sky('#9fd8ff', '#fde6f0'); clouds(8);
+    skyline(21, '#b9c8e6', 440, 100, 260, 'rgba(255,255,255,.4)');
+    ctx.fillStyle = '#9dd67a'; ctx.fillRect(0, 430, W, SIDEWALK - 430);
+    ctx.save();
+    ctx.beginPath(); ctx.ellipse(400, 420, 190, 78, 0, 0, Math.PI * 2);
+    const g = ctx.createLinearGradient(0, 340, 0, 500);
+    g.addColorStop(0, '#f6f9fc'); g.addColorStop(0.45, '#aeb9c7'); g.addColorStop(0.55, '#d6dee8'); g.addColorStop(1, '#7d8898');
+    ctx.fillStyle = g; ctx.fill(); ctx.clip();
+    skyline(21, 'rgba(70,90,130,.35)', 430, 10, 50); // reflection
+    ctx.restore();
+    ctx.beginPath(); ctx.ellipse(400, 420, 190, 78, 0, 0, Math.PI * 2); ctx.strokeStyle = INK; ctx.lineWidth = 3; ctx.stroke();
+    ctx.beginPath(); ctx.ellipse(400, 498, 60, 40, 0, Math.PI, 0); ctx.fillStyle = '#9dd67a'; ctx.fill(); ctx.stroke();
+    ctx.globalAlpha = 0.7; ellipse(320, 378, 60, 14); ctx.fillStyle = '#fff'; ctx.fill(); ctx.globalAlpha = 1;
+    face(400, 410, 1.6);
+    sidewalk('#e4dccd');
+  } },
+  { name: 'Navy Pier', landmark: 'The Centennial Wheel', draw() {
+    sky('#ff9a6b', '#ffe3b8'); sun(575, 330); clouds(15);
+    ctx.fillStyle = '#3d9be0'; ctx.fillRect(0, 380, W, SIDEWALK - 380);
+    ctx.strokeStyle = 'rgba(255,255,255,.6)'; ctx.lineWidth = 2;
+    for (let i = 0; i < 12; i++) {
+      const wx = ((i * 97 + G.t * 20) % (W + 40)) - 20, wy = 395 + (i * 31) % 100;
+      ctx.beginPath(); ctx.arc(wx, wy, 8, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke();
+    }
+    ferrisWheel(400, 240, 150, 470, false);
+    rrect(100, 440, 600, 50, 6); paint('#f1e2c6');
+    for (const tx of [180, 585]) { rrect(tx, 400, 40, 50, 4); paint('#f1e2c6'); ctx.beginPath(); ctx.moveTo(tx + 20, 400); ctx.lineTo(tx + 20, 370); ctx.strokeStyle = INK; ctx.lineWidth = 3; ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(tx + 20, 370); ctx.lineTo(tx + 38, 376 + Math.sin(G.t * 4) * 2); ctx.lineTo(tx + 20, 382); ctx.closePath(); paint('#e8483b', 2); }
+    ctx.fillStyle = '#7a5537'; ctx.fillRect(100, 490, 600, 34);
+    sidewalk('#c9a77c', '#a8865c');
+  } },
+  { name: 'Wrigleyville', landmark: 'Wrigley Field', draw() {
+    sky('#5ab0ff', '#c8ecff'); clouds(22);
+    ctx.fillStyle = '#c7c9cf'; ctx.beginPath(); ctx.moveTo(0, 300); ctx.lineTo(W, 260); ctx.lineTo(W, 420); ctx.lineTo(0, 420); ctx.fill();
+    for (const lx of [185, 590]) { ctx.fillStyle = '#5b5f6b'; ctx.fillRect(lx, 150, 6, 150); rrect(lx - 22, 130, 50, 26, 4); paint('#fffbe0'); }
+    ctx.fillStyle = '#2f8f3a'; ctx.fillRect(0, 400, W, 70);
+    for (let i = 0; i < 90; i++) circle((i * 53) % W, 405 + (i * 17) % 60, 5, i % 2 ? '#3fae4b' : '#267a30');
+    ctx.fillStyle = '#9b3d2c'; ctx.fillRect(0, 470, W, SIDEWALK - 470);
+    ctx.fillStyle = 'rgba(0,0,0,.15)';
+    for (let y = 476; y < SIDEWALK; y += 10) for (let x = (y / 10) % 2 ? 0 : 15; x < W; x += 30) ctx.fillRect(x, y, 27, 1.5);
+    ctx.save(); ctx.translate(-210, 0); // the marquee, centered in the portrait view
+    ctx.fillStyle = '#4b2e83'; ctx.fillRect(546, 330, 14, 194); ctx.fillRect(660, 330, 14, 194);
+    rrect(470, 210, 280, 100, 10); paint('#c8102e');
+    text('WRIGLEY FIELD', 610, 240, 30, '#fff', 'center', null);
+    text('HOME OF THE HOT DOG', 610, 268, 13, '#fff', 'center', null);
+    rrect(500, 282, 220, 22, 4); paint('#111', 0);
+    const msg = ['DOGS TODAY!', 'NO KETCHUP!', `LEVEL ${G.level + 1}!`][Math.floor(G.t / 2) % 3];
+    text(msg, 610, 294, 15, '#ffd23f', 'center', null);
+    ctx.restore();
+    sidewalk();
+  } },
+  { name: 'Grant Park', landmark: 'Buckingham Fountain', draw() {
+    sky('#69c1ff', '#e3f7ff'); sun(560, -80); clouds(31);
+    ctx.fillStyle = '#4aa3df'; ctx.fillRect(0, 360, W, 40);
+    ctx.fillStyle = '#9dd67a'; ctx.fillRect(0, 400, W, SIDEWALK - 400);
+    const jet = 160 + Math.sin(G.t * 1.6) * 25;
+    ctx.globalAlpha = 0.75; ctx.strokeStyle = '#bfe9ff'; ctx.lineWidth = 10; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(400, 380); ctx.lineTo(400, 380 - jet); ctx.stroke();
+    ctx.lineWidth = 4;
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2 + G.t, dx = Math.cos(a) * 110;
+      ctx.beginPath(); ctx.moveTo(400 + dx * 0.4, 440); ctx.quadraticCurveTo(400 + dx * 0.9, 380, 400 + dx * 1.3, 470); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+    ellipse(400, 485, 250, 30); paint('#f0b9a6');
+    ellipse(400, 480, 230, 20); paint('#7cc9f2', 0);
+    rrect(370, 420, 60, 60, 6); paint('#f0b9a6');
+    ellipse(400, 425, 130, 16); paint('#f0b9a6');
+    rrect(385, 375, 30, 50, 6); paint('#f0b9a6');
+    ellipse(400, 380, 70, 11); paint('#f0b9a6');
+    face(400, 450, 1);
+    for (let i = 0; i < 14; i++) circle(400 + Math.sin(i * 7 + G.t * 3) * 120, 230 + ((i * 41 + G.t * 60) % 180), 2.5, '#e0f6ff');
+    sidewalk('#e4dccd');
+  } },
+  { name: 'The Riverwalk', landmark: 'Marina City & the green river', draw() {
+    sky('#88d0ff', '#fff2d6'); clouds(44);
+    skyline(77, '#b6c6e3', 440, 120, 260, 'rgba(255,255,255,.35)');
+    for (const mx of [215, 295]) {
+      ctx.fillStyle = '#efe6d6'; ctx.fillRect(mx - 22, 160, 44, 280);
+      for (let y = 168; y < 330; y += 12) for (const side of [-1, 1]) {
+        ctx.beginPath(); ctx.ellipse(mx + side * 16, y, 10, 5, 0, 0, Math.PI); ctx.fillStyle = '#fffaf0'; ctx.fill(); ctx.strokeStyle = '#b9a98f'; ctx.lineWidth = 1.5; ctx.stroke();
+      }
+      rrect(mx - 26, 152, 52, 12, 6); paint('#d9cfbd', 2);
+    }
+    ctx.fillStyle = '#21c46a'; ctx.fillRect(0, 440, W, SIDEWALK - 440);
+    ctx.strokeStyle = 'rgba(255,255,255,.5)'; ctx.lineWidth = 2;
+    for (let i = 0; i < 10; i++) { const wx = ((i * 113 + G.t * 25) % (W + 40)) - 20; ctx.beginPath(); ctx.moveTo(wx, 460 + (i * 23) % 50); ctx.lineTo(wx + 18, 460 + (i * 23) % 50); ctx.stroke(); }
+    const lift = 0.25 + Math.sin(G.t * 0.6) * 0.1;
+    ctx.save(); ctx.translate(-110, 0);
+    ctx.fillStyle = '#c0392b'; ctx.fillRect(470, 420, 26, 40); ctx.fillRect(704, 420, 26, 40);
+    for (const [px, dir] of [[496, 1], [704, -1]]) {
+      ctx.save(); ctx.translate(px, 430); ctx.rotate(-dir * lift);
+      rrect(dir > 0 ? 0 : -104, -8, 104, 16, 3); paint('#e05a47'); ctx.restore();
+    }
+    ctx.restore();
+    const bx = ((G.t * 30) % (W + 200)) - 100;
+    rrect(bx - 50, 470, 100, 20, 8); paint('#fff'); rrect(bx - 30, 456, 60, 16, 4); paint('#3fa7ff');
+    face(bx, 480, 0.6);
+    sidewalk();
+  } },
+  { name: 'Endless Night', landmark: 'Stack your way to outer space!', final: true, draw() {
+    const top = Math.min(G.cam.top, 0) - 20;
+    const g = ctx.createLinearGradient(0, SPACE_Y, 0, SIDEWALK);
+    g.addColorStop(0, '#03030f'); g.addColorStop(0.55, '#0b1033'); g.addColorStop(1, '#3a2d7a');
+    ctx.fillStyle = g; ctx.fillRect(XMIN, top, XMAX - XMIN, H - top);
+    drawStars();
+    spaceScenery();
+    circle(250, -60, 34, '#fff6c9'); face(250, -58, 1.2);
+    skyline(61, '#1d1f48', SIDEWALK, 80, 220, 'rgba(255,224,130,.75)');
+    hancock(225, SIDEWALK, '#14152e', true);
+    willis(395, SIDEWALK, '#14152e', true);
+    ferrisWheel(570, 400, 66, SIDEWALK, true);
+    for (const f of G.fireworks) for (let i = 0; i < 14; i++) {
+      const a = (i / 14) * Math.PI * 2, d = f.age * 90;
+      ctx.globalAlpha = Math.max(0, 1 - f.age / 1.4); circle(f.x + Math.cos(a) * d, f.y + Math.sin(a) * d + f.age * f.age * 20, 3, f.color);
+    }
+    ctx.globalAlpha = 1;
+    sidewalk('#4a4560', '#3a3550');
+  } },
+];
+
+// Star field for the endless level, repeated every STAR_TILE px going up.
+const STAR_TILE = 2000;
+const STARS = (() => { const r = seeded(99); return Array.from({ length: 260 }, () => ({ x: -500 + r() * 1800, y: -r() * STAR_TILE, s: r() * 1.8 + 0.5, p: r() * 6 })); })();
+function drawStars() {
+  const bottom = Math.min(320, G.cam.top + H / G.cam.scale);
+  for (let k = Math.floor(G.cam.top / STAR_TILE); k * STAR_TILE - STAR_TILE < bottom; k++)
+    for (const st of STARS) {
+      const y = st.y + (k + 1) * STAR_TILE - STAR_TILE + 320;
+      if (y < G.cam.top - 5 || y > bottom || st.x < XMIN || st.x > XMAX) continue;
+      ctx.globalAlpha = 0.55 + 0.45 * Math.sin(G.t * 2 + st.p);
+      circle(st.x, y, st.s, '#fff');
+    }
+  ctx.globalAlpha = 1;
+}
+
+// Things you pass on the way up. y is world height (negative = above the screen you start on).
+const MILESTONES = [
+  { y: 84, text: 'Taller than Willis Tower! 🏙️', byTower: true },
+  { y: -200, text: 'Into the clouds! ☁️' },
+  { y: -430, text: 'Wave to the airplane! ✈️' },
+  { y: -775, text: 'Satellite spotted! 🛰️' },
+  { y: SPACE_Y, text: 'Welcome to outer space! ✨' },
+  { y: -1080, text: 'Hi, Moon! 🌕' },
+  { y: -1475, text: 'Saturn says hi! 🪐' },
+  { y: -1875, text: 'Race you, rocket! 🚀' },
+  { y: -2275, text: 'Is that a UFO?! 🛸' },
+  { y: -2900, text: 'A whole galaxy of hot dogs! 🌌' },
+];
+function spaceScenery() {
+  if (G.cam.top > 120) return; // nothing up there is on screen yet
+  ctx.globalAlpha = 0.8;
+  for (const [x, y, sc] of [[120, -180, 1.1], [420, -260, 0.9], [680, -170, 1.2], [260, -330, 0.8], [600, -320, 1]]) cloud(x + Math.sin(G.t * 0.3 + x) * 20, y, sc);
+  ctx.globalAlpha = 1;
+  // airplane
+  const span = XMAX - XMIN + 300, px = XMIN - 150 + ((G.t * 70) % span), py = -430;
+  rrect(px - 40, py - 9, 80, 18, 9); paint('#f4f6fb');
+  ctx.beginPath(); ctx.moveTo(px - 34, py - 6); ctx.lineTo(px - 46, py - 26); ctx.lineTo(px - 26, py - 6); ctx.closePath(); paint('#e8483b', 2);
+  ctx.beginPath(); ctx.moveTo(px - 6, py + 2); ctx.lineTo(px - 20, py + 20); ctx.lineTo(px + 6, py + 2); ctx.closePath(); paint('#cfd6e6', 2);
+  for (let i = 0; i < 4; i++) circle(px - 18 + i * 10, py - 2, 2.4, '#3fa7ff');
+  face(px + 26, py, 0.45);
+  if (Math.sin(G.t * 4) > 0) circle(px + 40, py, 3, '#ff3b3b');
+  // satellite
+  ctx.save(); ctx.translate(560, -775); ctx.rotate(Math.sin(G.t * 0.5) * 0.2);
+  rrect(-50, -8, 32, 16, 2); paint('#3f6fd8', 2); rrect(18, -8, 32, 16, 2); paint('#3f6fd8', 2);
+  rrect(-16, -14, 32, 28, 6); paint('#ffd23f'); face(0, 0, 0.5); ctx.restore();
+  // the Moon
+  circle(620, -1080, 90, '#e9e6d6');
+  for (const [dx, dy, r] of [[-40, -30, 14], [35, -45, 10], [45, 35, 16], [-30, 45, 9]]) circle(620 + dx, -1080 + dy, r, '#d3cfbb');
+  ctx.beginPath(); ctx.arc(620, -1080, 90, 0, Math.PI * 2); ctx.strokeStyle = INK; ctx.lineWidth = 3; ctx.stroke();
+  face(620, -1075, 2.2);
+  // Saturn
+  ctx.beginPath(); ctx.ellipse(180, -1475, 95, 22, -0.3, Math.PI, Math.PI * 2); ctx.strokeStyle = '#e8c27a'; ctx.lineWidth = 9; ctx.stroke();
+  circle(180, -1475, 50, '#f4b860'); circle(165, -1490, 18, '#f7cd8a');
+  ctx.beginPath(); ctx.ellipse(180, -1475, 95, 22, -0.3, 0, Math.PI); ctx.strokeStyle = '#e8c27a'; ctx.lineWidth = 9; ctx.stroke();
+  face(180, -1470, 1.3);
+  // rocket
+  const ry = -1875 + Math.sin(G.t * 2) * 10;
+  ctx.beginPath(); ctx.moveTo(620, ry + 40); ctx.lineTo(612 + Math.sin(G.t * 30) * 3, ry + 70); ctx.lineTo(628, ry + 40); ctx.closePath(); paint('#ff9f1c', 0);
+  ctx.beginPath(); ctx.moveTo(620, ry - 50); ctx.quadraticCurveTo(648, ry - 20, 640, ry + 40); ctx.lineTo(600, ry + 40); ctx.quadraticCurveTo(592, ry - 20, 620, ry - 50); paint('#f4f6fb');
+  ctx.beginPath(); ctx.moveTo(600, ry + 20); ctx.lineTo(586, ry + 44); ctx.lineTo(602, ry + 40); ctx.closePath(); paint('#e8483b', 2);
+  ctx.beginPath(); ctx.moveTo(640, ry + 20); ctx.lineTo(654, ry + 44); ctx.lineTo(638, ry + 40); ctx.closePath(); paint('#e8483b', 2);
+  circle(620, ry - 8, 11, '#3fa7ff'); face(620, ry - 8, 0.4);
+  // UFO
+  const ux = 280 + Math.sin(G.t * 0.8) * 60, uy = -2275;
+  ctx.globalAlpha = 0.25; ctx.beginPath(); ctx.moveTo(ux - 20, uy + 10); ctx.lineTo(ux - 60, uy + 140); ctx.lineTo(ux + 60, uy + 140); ctx.lineTo(ux + 20, uy + 10); ctx.fillStyle = '#9dff7a'; ctx.fill(); ctx.globalAlpha = 1;
+  ctx.beginPath(); ctx.ellipse(ux, uy - 8, 26, 22, 0, Math.PI, Math.PI * 2); paint('#bfe9ff');
+  ellipse(ux, uy + 4, 64, 16); paint('#9aa6b5');
+  for (let i = -2; i <= 2; i++) circle(ux + i * 22, uy + 6, 4, Math.sin(G.t * 6 + i) > 0 ? '#ffd23f' : '#ff7fbf');
+  face(ux, uy - 14, 0.6);
+  // galaxy
+  for (let i = 0; i < 120; i++) {
+    const a = i * 0.25 + G.t * 0.2, d = i * 1.3;
+    circle(420 + Math.cos(a) * d, -2900 + Math.sin(a) * d * 0.5, 2.2, ['#ff7fbf', '#b28dff', '#7cf2ff'][i % 3]);
+  }
+}
+
+
+// A glowing fun-fact bubble: catch it to learn something. Missing one costs nothing.
+TOPPINGS.fact = { name: 'Fun fact', h: 36, w: 44, fact: true, draw(x, y) {
+  const glow = 0.5 + 0.5 * Math.sin(G.t * 5);
+  ctx.globalAlpha = 0.35 + glow * 0.25; circle(x, y, 30, '#fff3a0'); ctx.globalAlpha = 1;
+  ctx.beginPath(); ctx.arc(x, y, 20, 0, Math.PI * 2); paint('#ffd23f');
+  text('?', x, y + 1, 24, INK, 'center', null);
+  text('✦', x + 22, y - 18 + glow * 3, 12, '#fff7b0', 'center', null);
+  text('✦', x - 22, y + 16 - glow * 3, 10, '#fff7b0', 'center', null);
+} };
+
+// ---------------------------------------------------------------------------
+// Fun facts: a shuffled deck, so you see every fact before any repeats.
+// ---------------------------------------------------------------------------
+const FACTS = [
+  'A Chicago-style hot dog is "dragged through the garden": mustard, onions, relish, tomato, a pickle spear, sport peppers and celery salt.',
+  'Chicago dogs are served on a poppy seed bun.',
+  'The classic Chicago dog uses an all-beef frank.',
+  'The neon green relish gets its bright color from a little blue food dye.',
+  'Sport peppers are small, pickled green chili peppers. They pack a little heat!',
+  'Celery salt is a mix of salt and ground celery seed.',
+  'Ketchup on a Chicago dog is famously frowned upon. Mustard only!',
+  'Vienna Beef traces its start to Chicago\'s 1893 World\'s Fair.',
+  'A Maxwell Street Polish is a grilled Polish sausage with grilled onions and mustard, named after a famous Chicago market street.',
+  'Americans eat billions of hot dogs every year.',
+  'National Hot Dog Day in the US falls in July.',
+  'Tomatoes are botanically a fruit.',
+  'Pickles are cucumbers that have been soaked in brine or vinegar.',
+  'Mustard seeds come from the mustard plant, a cousin of broccoli and cabbage.',
+  'Onions make you cry because cutting them releases a sulfur gas that stings your eyes.',
+  'Willis Tower, once called Sears Tower, was the world\'s tallest building when it was finished in 1973.',
+  'Willis Tower is about 1,450 feet tall to its roof.',
+  'The glass boxes of the Skydeck Ledge stick out from the 103rd floor of Willis Tower.',
+  'The Bean\'s real name is Cloud Gate. It was made by artist Anish Kapoor.',
+  'Cloud Gate is made of 168 stainless steel plates, polished so you can\'t see the seams.',
+  'Cloud Gate weighs about 110 tons.',
+  'The world\'s very first Ferris wheel was built for Chicago\'s 1893 World\'s Fair.',
+  'Navy Pier opened in 1916.',
+  'Navy Pier\'s Centennial Wheel is nearly 200 feet tall.',
+  'Wrigley Field opened in 1914. Only Boston\'s Fenway Park is an older Major League ballpark.',
+  'The famous ivy on Wrigley Field\'s outfield walls was planted in 1937.',
+  'Wrigley Field\'s center field scoreboard is still changed by hand.',
+  'Wrigley Field didn\'t get lights for night games until 1988.',
+  'The Chicago Cubs won the 2016 World Series, their first title since 1908.',
+  'Buckingham Fountain was dedicated in 1927.',
+  'Buckingham Fountain\'s center jet can shoot water about 150 feet into the air.',
+  'The four sea horses on Buckingham Fountain stand for the four states that border Lake Michigan.',
+  'Chicago has dyed its river green for St. Patrick\'s Day since 1962.',
+  'In 1900, engineers reversed the flow of the Chicago River so it flows away from Lake Michigan.',
+  'Marina City\'s twin round towers are nicknamed the "corncob" buildings.',
+  'The Chicago Water Tower is one of the few buildings that survived the Great Chicago Fire of 1871.',
+  'Chicago\'s Home Insurance Building, finished in 1885, is often called the world\'s first skyscraper.',
+  'Chicago\'s first elevated "L" train line opened in 1892.',
+  'The four red stars on Chicago\'s flag stand for big moments in the city\'s history, like the Great Chicago Fire.',
+  'Chicago\'s motto is "Urbs in Horto," Latin for "City in a Garden."',
+  'Some say Chicago\'s nickname "the Windy City" came from long-winded politicians, not the weather.',
+  'Lake Michigan is the only Great Lake entirely inside the United States.',
+  'Chicago\'s Lakefront Trail runs about 18 miles along Lake Michigan.',
+  'The giant Picasso sculpture in Daley Plaza was unveiled in 1967 and has no official name.',
+  'Chicago deep-dish pizza is linked to Pizzeria Uno, which opened in 1943.',
+  'Chicago tavern-style thin crust pizza is cut into squares, called a "party cut."',
+  'An Italian beef sandwich is thin roast beef on a roll, often dipped in juice and topped with giardiniera.',
+  'Garrett Popcorn\'s famous Chicago Mix combines caramel corn and cheese corn.',
+  'Twinkies were invented in 1930 by a baker in the Chicago area.',
+  'The brownie is said to have been invented at Chicago\'s Palmer House Hotel for the 1893 World\'s Fair.',
+];
+const factCountEl = document.getElementById('factCount');
+const factTextEl = document.getElementById('factText');
+let foundFacts = new Set(store.get('dogstack-mobile.facts', []));
+let factDeck = [];
+function nextFact() {
+  if (!factDeck.length) {
+    // unseen facts first, then everything again in a new order
+    const unseen = FACTS.map((_, i) => i).filter((i) => !foundFacts.has(i));
+    factDeck = (unseen.length ? unseen : FACTS.map((_, i) => i)).sort(() => Math.random() - 0.5);
+  }
+  return factDeck.pop();
+}
+let factFlash;
+function showFact() {
+  const i = nextFact();
+  const isNew = !foundFacts.has(i);
+  foundFacts.add(i);
+  store.set('dogstack-mobile.facts', [...foundFacts]);
+  factTextEl.textContent = FACTS[i];
+  updateFactCount(isNew);
+  factEl.classList.add('fresh');
+  clearTimeout(factFlash);
+  factFlash = setTimeout(() => factEl.classList.remove('fresh'), 4000);
+}
+function updateFactCount(isNew) {
+  factCountEl.textContent = `${isNew ? 'New! ' : ''}${foundFacts.size} of ${FACTS.length} fun facts found`;
+}
+if (foundFacts.size) updateFactCount(false);
+
+// ---------------------------------------------------------------------------
+// Game state
+// ---------------------------------------------------------------------------
+const G = {
+  state: 'title', t: 0, level: 0, caught: 0, levelCaught: 0, served: 0, hearts: 5,
+  x: CENTER_X, target: null, vx: 0, wob: 0, stack: [], items: [], particles: [], fireworks: [],
+  spawnT: 1, factT: 8, banner: null, overAt: 0, best: store.get('dogstack-mobile.best', 0),
+  cam: { top: TOP0, scale: 1 }, milestone: 0,
+};
+
+function newGame() {
+  Object.assign(G, { state: 'playing', level: 0, caught: 0, levelCaught: 0, served: 0, hearts: 5,
+    x: CENTER_X, target: null, vx: 0, stack: [], items: [], particles: [], spawnT: 1.2, factT: rand(6, 10),
+    cam: { top: TOP0, scale: 1 }, milestone: 0 });
+  showBanner(LEVELS[0].name, `Level 1 · ${LEVELS[0].landmark}`);
+}
+function startOrPause() {
+  if (G.state === 'title') newGame();
+  else if (G.state === 'over') { if (performance.now() - G.overAt > 900) newGame(); } // no accidental restarts
+  else if (G.state === 'playing') G.state = 'paused';
+  else if (G.state === 'paused') G.state = 'playing';
+}
+function showBanner(title, sub, time = 2.4) { G.banner = { title, sub, time, max: time }; }
+
+// "Very slightly" faster each level; the endless level keeps creeping up.
+function speedFactor() {
+  const endless = LEVELS[G.level].final ? Math.floor(G.levelCaught / 10) * 0.02 : 0;
+  return 1 + G.level * 0.06 + endless;
+}
+function moveSpeed() { return MOVE_SPEED * speedFactor(); }
+
+// Seconds until a topping at height y (falling at speed multiplier sp) reaches the top of the stack.
+function landTime(y, h, sp) {
+  return (STACK_BASE - stackHeight() - (y + h / 2)) / (BASE_FALL * speedFactor() * sp);
+}
+
+// Place each new topping somewhere a good player can actually reach in time, given the toppings
+// already falling; and never drop ketchup right where you need to be for a topping.
+function spawn(forced) {
+  const roll = Math.random();
+  const type = forced || (roll < 0.12 + G.level * 0.01 ? 'ketchup' : roll > 0.975 ? 'golden' : NORMAL[Math.floor(Math.random() * NORMAL.length)]);
+  const t = TOPPINGS[type];
+  const y = G.cam.top - 40; // just above the top of the screen, wherever the camera is
+  const sp = rand(0.9, 1.15);
+  const lands = landTime(y, t.h, sp);
+  const isNeeded = (it) => !TOPPINGS[it.type].hazard && !TOPPINGS[it.type].bonus && !TOPPINGS[it.type].fact;
+  const needed = G.items.filter(isNeeded).map((it) => ({ x: it.x, t: landTime(it.y, TOPPINGS[it.type].h, it.sp) }));
+  const reach = (dt) => moveSpeed() * Math.max(0, dt) * 0.65 + 30; // 0.65: room for reaction time and wobble
+  const lo0 = PLAY_MIN - 10, hi0 = PLAY_MAX + 10;
+  let x;
+  if (t.hazard) {
+    for (let i = 0; i < 12; i++) {
+      x = rand(lo0, hi0);
+      if (!needed.some((n) => Math.abs(n.t - lands) < 0.7 && Math.abs(n.x - x) < 130)) break;
+    }
+  } else {
+    // where the hot dog will be just before this lands, and the next topping it must reach after
+    let before = { x: G.x, t: 0 }, after = null;
+    for (const n of needed) {
+      if (n.t <= lands && n.t >= before.t) before = n;
+      if (n.t > lands && (!after || n.t < after.t)) after = n;
+    }
+    let lo = Math.max(lo0, before.x - reach(lands - before.t)), hi = Math.min(hi0, before.x + reach(lands - before.t));
+    if (after) {
+      const lo2 = Math.max(lo, after.x - reach(after.t - lands)), hi2 = Math.min(hi, after.x + reach(after.t - lands));
+      if (lo2 <= hi2) { lo = lo2; hi = hi2; }
+    }
+    // ...and not right under ketchup that will land at about the same time
+    const ketchup = G.items.filter((it) => TOPPINGS[it.type].hazard)
+      .map((it) => ({ x: it.x, t: landTime(it.y, TOPPINGS[it.type].h, it.sp) }));
+    for (let i = 0; i < 12; i++) {
+      x = rand(lo, Math.max(lo, hi));
+      if (!ketchup.some((k) => Math.abs(k.t - lands) < 0.7 && Math.abs(k.x - x) < 130)) break;
+    }
+  }
+  G.items.push({ type, x, y, prevBottom: y, sp, spin: rand(0, 6) });
+}
+
+function stackHeight() { return G.stack.reduce((s, l) => s + TOPPINGS[l.type].h, 0); }
+// x position of each layer: steering + lean from off-center catches + wobble that grows near the top
+function layerXs() {
+  const xs = []; let lean = 0, y = 0;
+  const total = Math.max(MAX_STACK, stackHeight());
+  for (const l of G.stack) {
+    lean += l.off; y += TOPPINGS[l.type].h;
+    const frac = y / total;
+    xs.push(G.x + lean + G.wob * Math.pow(frac, 1.6) * Math.sin(G.t * 3.4 - frac * 1.4));
+  }
+  return xs;
+}
+const STACK_BASE = GROUND - 46;
+
+function burst(x, y, colors, n = 10, speed = 160) {
+  for (let i = 0; i < n; i++) {
+    const a = rand(0, Math.PI * 2), s = rand(speed * 0.4, speed);
+    G.particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - 80, life: rand(0.5, 1), color: colors[i % colors.length], r: rand(2, 5) });
+  }
+}
+
+function loseHeart(reason) {
+  G.hearts--;
+  beep(160, 0.18, 'sawtooth'); buzz([60, 40, 60]);
+  showBanner(reason, G.hearts > 0 ? `${G.hearts} ${G.hearts === 1 ? 'dog' : 'dogs'} left` : '', 1.2);
+  if (G.hearts <= 0) {
+    G.state = 'over'; G.overAt = performance.now();
+    if (G.caught > G.best) { G.best = G.caught; store.set('dogstack-mobile.best', G.best); }
+  }
+}
+
+function topple() {
+  const xs = layerXs();
+  G.stack.forEach((l, i) => burst(xs[i], STACK_BASE - i * 16, ['#ffd23f', '#45e33a', '#ff4b4b'], 3, 220));
+  G.stack = [];
+  loseHeart('Timber! It toppled!');
+}
+
+// Reaching the finish line serves the dog and completes the level; the next level starts with a plain dog.
+function serve() {
+  G.served++;
+  burst(G.x, STACK_BASE - MAX_STACK / 2, ['#ffd23f', '#e8483b', '#45e33a', '#3fa7ff', '#ff7fbf'], 40, 320);
+  G.stack = [];
+  beep(660, 0.12); setTimeout(() => beep(880, 0.15), 120); buzz([30, 30, 30, 30, 80]);
+  levelUp();
+}
+
+function levelUp() {
+  G.level++; G.levelCaught = 0; G.items = []; G.spawnT = 2.4;
+  const L = LEVELS[G.level];
+  showBanner(`ORDER UP! Dog #${G.served} 🌭`,
+    L.final ? 'Final level: stack to the stars!' : `Next: Level ${G.level + 1}, ${L.name}`, 3);
+  beep(523, 0.1); setTimeout(() => beep(659, 0.1), 110); setTimeout(() => beep(784, 0.18), 220);
+  showFact(); // a free fun fact for every dog served
+}
+
+function update(dt) {
+  G.t += dt;
+  for (const p of G.particles) { p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 500 * dt; p.life -= dt; }
+  G.particles = G.particles.filter((p) => p.life > 0);
+  if (LEVELS[G.level].final) {
+    if (Math.random() < dt * 0.6) G.fireworks.push({ x: rand(220, 580), y: rand(-100, 200), age: 0, color: ['#ff7fbf', '#ffd23f', '#7cf2ff', '#9dff7a'][Math.floor(rand(0, 4))] });
+    for (const f of G.fireworks) f.age += dt;
+    G.fireworks = G.fireworks.filter((f) => f.age < 1.4);
+  }
+  if (G.banner && (G.banner.time -= dt) <= 0) G.banner = null;
+  updateCamera(dt);
+  if (G.state !== 'playing') return;
+  if (LEVELS[G.level].final) checkMilestones();
+
+  // movement: held keys, or slide toward where your finger has dragged the target
+  const prevX = G.x;
+  const dir = (held.right ? 1 : 0) - (held.left ? 1 : 0);
+  if (dir) { G.x += dir * moveSpeed() * dt; G.target = null; }
+  else if (G.target !== null) {
+    const step = moveSpeed() * dt;
+    G.x += clamp(G.target - G.x, -step, step);
+  }
+  G.x = clamp(G.x, PLAY_MIN, PLAY_MAX);
+  G.vx += ((G.x - prevX) / dt - G.vx) * Math.min(1, dt * 10);
+
+  // wobble grows with height, and moving fast makes it worse
+  const hf = Math.min(1, stackHeight() / MAX_STACK);
+  const target = 26 * hf * hf + Math.min(Math.abs(G.vx) / 450, 1) * 14 * hf;
+  G.wob += (target - G.wob) * Math.min(1, dt * 3);
+
+  // spawn toppings, and now and then a fun-fact bubble
+  if ((G.spawnT -= dt) <= 0) {
+    if (G.factT <= 0) { spawn('fact'); G.factT = rand(12, 28); }
+    else spawn();
+    G.spawnT = (BASE_SPAWN / (1 + (speedFactor() - 1) * 0.8)) * rand(0.75, 1.25);
+  }
+  G.factT -= dt;
+
+  // falling toppings
+  const fall = BASE_FALL * speedFactor();
+  const xs = layerXs();
+  const topX = xs.length ? xs[xs.length - 1] : G.x;
+  const topY = STACK_BASE - stackHeight();
+  const catchHalf = 52;
+  const level = G.level;
+  for (const it of G.items) {
+    const t = TOPPINGS[it.type];
+    it.y += fall * it.sp * dt;
+    const bottom = it.y + t.h / 2;
+    if (it.prevBottom <= topY && bottom >= topY && Math.abs(it.x - topX) < catchHalf) {
+      it.done = true;
+      if (t.hazard) {
+        burst(it.x, topY, ['#e3262f', '#ff6b6b'], 16, 200);
+        loseHeart('Ketchup?! Not in Chicago!');
+      } else if (t.fact) {
+        burst(it.x, topY, ['#ffd23f', '#fff3a0'], 14, 180);
+        beep(1046, 0.1); buzz(20);
+        showBanner('💡 Fun fact!', 'Read it below the game', 1.2);
+        showFact();
+      } else if (t.bonus) {
+        G.hearts = Math.min(5, G.hearts + 1);
+        burst(it.x, topY, ['#ffc928', '#fff1a8'], 18, 220);
+        beep(988, 0.12); buzz(30);
+        showBanner('Golden frank!', '+1 dog', 1);
+      } else {
+        G.stack.push({ type: it.type, off: (it.x - topX) * 0.3 });
+        G.caught++; G.levelCaught++;
+        burst(it.x, topY, ['#fff', '#ffd23f'], 6, 120);
+        beep(330 + G.stack.length * 30, 0.06); buzz(12);
+        const lean = G.stack.reduce((s, l) => s + l.off, 0);
+        if (Math.abs(lean) > 70) topple();
+        else if (!LEVELS[G.level].final && stackHeight() >= MAX_STACK) serve();
+      }
+    } else if (it.y - t.h > viewBottom()) {
+      it.done = true;
+      if (!t.hazard && !t.bonus && !t.fact) loseHeart(`Dropped the ${t.name.toLowerCase()}!`);
+    }
+    it.prevBottom = bottom;
+    if (G.state !== 'playing' || G.level !== level) break; // game over or new level: stop processing old toppings
+  }
+  G.items = G.items.filter((it) => !it.done);
+}
+
+// The endless level zooms out (down to 70%) and then rises with the tower so its top stays reachable.
+function updateCamera(dt) {
+  let top = TOP0, scale = 1;
+  if (LEVELS[G.level].final) {
+    const need = STACK_BASE - stackHeight() - 320; // keep sky above the tower for falling toppings
+    if (need < TOP0) { top = need; scale = Math.max(0.7, VH / (H - need)); }
+  }
+  const k = Math.min(1, dt * 2.5);
+  G.cam.top += (top - G.cam.top) * k;
+  G.cam.scale += (scale - G.cam.scale) * k;
+}
+function viewBottom() { return Math.min(H, G.cam.top + VH / G.cam.scale); }
+function checkMilestones() {
+  const m = MILESTONES[G.milestone];
+  // announce each landmark as it comes into view above the tower (or, for Willis, once the tower is taller)
+  if (m && (m.byTower ? STACK_BASE - stackHeight() <= m.y : G.cam.top + 150 <= m.y)) {
+    G.milestone++; showBanner(m.text, `${towerFeet().toLocaleString()} ft tall!`, 2); beep(880, 0.1);
+  }
+}
+function towerFeet() { return Math.round(stackHeight() * 3.2); }
+
+// ---------------------------------------------------------------------------
+// Drawing
+// ---------------------------------------------------------------------------
+const BTN = { sound: { x: 34, y: 36, r: 24 }, pause: { x: VW - 34, y: 36, r: 24 } };
+
+function draw() {
+  ctx.fillStyle = '#03030f'; ctx.fillRect(0, 0, VW, VH);
+  // world: everything that moves with the camera
+  const sc = G.cam.scale;
+  XMIN = CENTER_X - VW / 2 / sc - 2; XMAX = CENTER_X + VW / 2 / sc + 2;
+  ctx.save();
+  ctx.translate(VW / 2, 0); ctx.scale(sc, sc); ctx.translate(-CENTER_X, -G.cam.top);
+  LEVELS[G.level].draw();
+  if (!LEVELS[G.level].final) drawFinishLine();
+  const xs = layerXs();
+  const mood = G.state === 'over' ? 'sad' : G.wob > 12 ? 'worried' : 'happy';
+  drawDog(G.x, mood);
+  let y = STACK_BASE;
+  G.stack.forEach((l, i) => {
+    const t = TOPPINGS[l.type];
+    y -= t.h;
+    t.draw(xs[i], y + t.h / 2, t.w);
+  });
+  for (const it of G.items) {
+    const t = TOPPINGS[it.type];
+    ctx.save(); ctx.translate(it.x, it.y); ctx.rotate(t.fact ? 0 : Math.sin(G.t * 4 + it.spin) * 0.15);
+    t.draw(0, 0, t.w);
+    ctx.restore();
+  }
+  for (const p of G.particles) { ctx.globalAlpha = Math.max(0, p.life); circle(p.x, p.y, p.r, p.color); }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+
+  // HUD: the level comes first; each level is one dog to serve
+  const L = LEVELS[G.level];
+  rrect(68, 8, VW - 136, 80, 16); paint('rgba(255,255,255,.92)', 3);
+  text(L.final ? 'FINAL LEVEL · ENDLESS' : `Level ${G.level + 1} of ${LEVELS.length}`, VW / 2, 28, 21, '#ffd23f');
+  text(L.final ? 'Stack to the stars!' : L.name, VW / 2, 52, 15, INK, 'center', null);
+  if (!L.final) {
+    const hf = Math.min(1, stackHeight() / MAX_STACK);
+    rrect(VW / 2 - 110, 66, 220, 12, 6); paint('#f0e4d0', 2);
+    if (hf > 0) { rrect(VW / 2 - 110, 66, 220 * hf, 12, 6); paint(hf > 0.75 ? '#ff7a45' : '#45e33a', 0); }
+  } else {
+    text(`🚀 ${towerFeet().toLocaleString()} ft`, VW / 2, 72, 15, INK, 'center', null);
+  }
+  drawButtons();
+  rrect(10, 96, 170, 30, 15); paint('rgba(255,255,255,.88)', 2.5);
+  text(`Served ${G.served} · Caught ${G.caught}`, 22, 112, 13, INK, 'left', null);
+  rrect(VW - 160, 96, 150, 30, 15); paint('rgba(255,255,255,.88)', 2.5);
+  for (let i = 0; i < 5; i++) {
+    ctx.globalAlpha = i < G.hearts ? 1 : 0.25;
+    ctx.save(); ctx.translate(VW - 140 + i * 27, 111); ctx.scale(0.14, 0.14);
+    rrect(-82, -12, 164, 24, 12); paint('#c8553d', 12);
+    ctx.beginPath(); ctx.ellipse(0, 6, 74, 22, 0, 0, Math.PI); ctx.closePath(); paint('#f6c27a', 12);
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+
+  if (G.banner) {
+    const a = Math.min(1, G.banner.time * 3, (G.banner.max - G.banner.time) * 5);
+    ctx.globalAlpha = a;
+    text(G.banner.title, VW / 2, 170, 32, '#ffd23f');
+    if (G.banner.sub) text(G.banner.sub, VW / 2, 206, 18, '#fff');
+    ctx.globalAlpha = 1;
+  }
+  const found = `💡 ${foundFacts.size} of ${FACTS.length} fun facts found`;
+  if (G.state === 'title') overlay('Chicago Dog Stack', [
+    'Swipe left and right to move.', 'Catch mustard, onions, relish,', 'tomato, pickles, sport peppers', '& celery salt. Dodge the ketchup!',
+    '', 'Stack to the ORDER UP line', 'to serve each dog.', 'Catch 💡 bubbles for fun facts!', '', 'Tap to start', found]);
+  if (G.state === 'paused') overlay('Paused', ['Tap to keep stacking', '', found]);
+  if (G.state === 'over') overlay('Stand closed!', [`You caught ${G.caught} toppings`, `and served ${G.served} ${G.served === 1 ? 'dog' : 'dogs'}.`,
+    G.caught >= G.best && G.caught > 0 ? '🎉 New best! 🎉' : `Best: ${G.best}`, '', 'Tap to play again', found]);
+}
+
+// Sound and pause buttons, drawn as shapes so they look the same on every phone.
+function drawButtons() {
+  for (const b of Object.values(BTN)) { ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2); paint('rgba(255,255,255,.92)', 3); }
+  const s = BTN.sound;
+  ctx.fillStyle = INK; ctx.beginPath();
+  ctx.moveTo(s.x - 11, s.y - 5); ctx.lineTo(s.x - 5, s.y - 5); ctx.lineTo(s.x + 2, s.y - 11); ctx.lineTo(s.x + 2, s.y + 11);
+  ctx.lineTo(s.x - 5, s.y + 5); ctx.lineTo(s.x - 11, s.y + 5); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = soundOn ? INK : '#e3262f'; ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ctx.beginPath();
+  if (soundOn) { ctx.arc(s.x + 4, s.y, 6, -0.9, 0.9); ctx.moveTo(s.x + 8.5, s.y - 9.5); ctx.arc(s.x + 4, s.y, 11, -0.9, 0.9); }
+  else { ctx.moveTo(s.x + 6, s.y - 6); ctx.lineTo(s.x + 14, s.y + 6); ctx.moveTo(s.x + 14, s.y - 6); ctx.lineTo(s.x + 6, s.y + 6); }
+  ctx.stroke();
+  const p = BTN.pause;
+  ctx.fillStyle = INK;
+  if (G.state === 'playing') { rrect(p.x - 8, p.y - 9, 6, 18, 2); ctx.fill(); rrect(p.x + 2, p.y - 9, 6, 18, 2); ctx.fill(); }
+  else { ctx.beginPath(); ctx.moveTo(p.x - 6, p.y - 10); ctx.lineTo(p.x + 10, p.y); ctx.lineTo(p.x - 6, p.y + 10); ctx.closePath(); ctx.fill(); }
+}
+
+// Dashed "ORDER UP" line: stack up to it to serve this level's dog.
+function drawFinishLine() {
+  const y = STACK_BASE - MAX_STACK, x1 = XMIN + 12, x2 = XMAX - 44;
+  ctx.setLineDash([14, 10]); ctx.lineCap = 'butt';
+  ctx.strokeStyle = INK; ctx.lineWidth = 6; ctx.beginPath(); ctx.moveTo(x1, y); ctx.lineTo(x2, y); ctx.stroke();
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.strokeStyle = INK; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(x2 + 8, y + 14); ctx.lineTo(x2 + 8, y - 34); ctx.stroke();
+  for (let r = 0; r < 3; r++) for (let c = 0; c < 4; c++) { ctx.fillStyle = (r + c) % 2 ? INK : '#fff'; ctx.fillRect(x2 + 10 + c * 7, y - 34 + r * 7, 7, 7); }
+  text('ORDER UP!', x1 + 4, y - 14, 14, '#fff', 'left');
+}
+function overlay(title, lines) {
+  ctx.fillStyle = 'rgba(59,36,22,.55)'; ctx.fillRect(0, 0, VW, VH);
+  const h = 110 + lines.length * 30;
+  const top = Math.max(140, (VH - h) / 2 - 20);
+  rrect(28, top, VW - 56, h, 26); paint('#fff6e6', 4);
+  text(title, VW / 2, top + 46, 36, '#ffd23f');
+  lines.forEach((l, i) => text(l, VW / 2, top + 98 + i * 30, 19, INK, 'center', null));
+}
+
+// ---------------------------------------------------------------------------
+// Sound and vibration
+// ---------------------------------------------------------------------------
+let audio, soundOn = store.get('dogstack-mobile.sound', true);
+function unlockAudio() { // phones only allow sound after a tap
+  try { audio ||= new AudioContext(); if (audio.state === 'suspended') audio.resume(); } catch {}
+}
+function beep(freq, dur, type = 'triangle') {
+  if (!soundOn || !audio) return;
+  try {
+    const o = audio.createOscillator(), g = audio.createGain();
+    o.type = type; o.frequency.value = freq;
+    g.gain.setValueAtTime(0.08, audio.currentTime); g.gain.exponentialRampToValueAtTime(0.001, audio.currentTime + dur);
+    o.connect(g).connect(audio.destination); o.start(); o.stop(audio.currentTime + dur);
+  } catch {}
+}
+function buzz(pattern) { if (soundOn) try { navigator.vibrate?.(pattern); } catch {} }
+
+// ---------------------------------------------------------------------------
+// Controls: swipe anywhere on the game (phones), arrow keys or A/D (computers)
+// ---------------------------------------------------------------------------
+const SWIPE = 1.5; // how far the hot dog moves per finger movement
+const held = { left: false, right: false };
+let drag = null;
+function toScreen(e) {
+  const r = canvas.getBoundingClientRect();
+  return { x: (e.clientX - r.left) / r.width * VW, y: (e.clientY - r.top) / r.height * VH };
+}
+const hitBtn = (p, b) => Math.hypot(p.x - b.x, p.y - b.y) <= b.r + 10;
+canvas.addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  unlockAudio();
+  const p = toScreen(e);
+  if (hitBtn(p, BTN.sound)) { soundOn = !soundOn; store.set('dogstack-mobile.sound', soundOn); return; }
+  if (hitBtn(p, BTN.pause) || G.state !== 'playing') { startOrPause(); return; }
+  drag = { id: e.pointerId, x: p.x };
+  G.target = G.x;
+  try { canvas.setPointerCapture(e.pointerId); } catch {}
+});
+canvas.addEventListener('pointermove', (e) => {
+  if (!drag || e.pointerId !== drag.id) return;
+  const p = toScreen(e);
+  G.target = clamp(G.target + (p.x - drag.x) / G.cam.scale * SWIPE, PLAY_MIN, PLAY_MAX);
+  drag.x = p.x;
+});
+for (const ev of ['pointerup', 'pointercancel']) canvas.addEventListener(ev, (e) => { if (drag && e.pointerId === drag.id) drag = null; });
+
+window.addEventListener('keydown', (e) => {
+  if (['ArrowLeft', 'KeyA'].includes(e.code)) held.left = true;
+  else if (['ArrowRight', 'KeyD'].includes(e.code)) held.right = true;
+  else if (['Space', 'Enter', 'KeyP'].includes(e.code) && !e.repeat) { unlockAudio(); startOrPause(); }
+  else return;
+  e.preventDefault();
+});
+window.addEventListener('keyup', (e) => {
+  if (['ArrowLeft', 'KeyA'].includes(e.code)) held.left = false;
+  if (['ArrowRight', 'KeyD'].includes(e.code)) held.right = false;
+});
+// Pause when you switch apps or lock the phone.
+document.addEventListener('visibilitychange', () => { if (document.hidden && G.state === 'playing') G.state = 'paused'; });
+window.addEventListener('blur', () => { held.left = held.right = false; });
+window.addEventListener('resize', fitCanvas);
+
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  update(dt); draw();
+  requestAnimationFrame(frame);
+}
+fitCanvas();
+requestAnimationFrame(frame);
+
+// Works offline and can be installed to the home screen (only when served over http/https).
+if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+}
+</script>
+</body>
+</html>
