@@ -46,6 +46,26 @@ GitHub Pages hosts the game for free, and it stays online without your computer.
 
 Every push to `main` updates the live site within a minute or two. When you change any file, also bump the version in `sw.js` (for example `dogstack-v1` to `dogstack-v2`), so phones that installed the game pick up the new version. An installed game updates the next time it's opened with an internet connection, and sometimes needs to be closed and opened a second time.
 
+## Deploy it with ngrok Ship
+
+The repo includes a `Dockerfile`, so it can also run as a container on ngrok Ship (or any host that runs containers). It serves the game with nginx on **port 8080**, and `/healthz` returns `ok` for health checks.
+
+1. In the ngrok dashboard, open **Ship** and create a new app: https://dashboard.ngrok.com/ship/apps/new
+2. Connect GitHub, choose this repository, choose its `Dockerfile`, and track the `main` branch. If the repository doesn't appear, revoke "ngrok ship" at https://github.com/settings/apps/authorizations and connect GitHub again.
+3. Ship opens a pull request that adds a build workflow. Merge it, because nothing deploys until it's merged.
+4. Choose a compute pool, set the port to **8080**, and deploy. Ship builds the container, waits for the health check, then switches traffic to it. The first deploy can take a few minutes.
+
+Every push to `main` then builds and deploys a new version. Bump the version in `sw.js` with each change here too.
+
+To try the container on your own computer:
+
+```bash
+docker build -t hotdog-stack-mobile .
+docker run --rm -p 8080:8080 hotdog-stack-mobile
+```
+
+Then open http://localhost:8080.
+
 ## Run it on your computer
 
 Any static web server works. With Python, which is already on Macs:
@@ -64,5 +84,6 @@ Then open http://localhost:8000. You can also double-click `index.html` to play,
 | `manifest.webmanifest` | The app's name, icon and colors, for installing it on a home screen |
 | `sw.js` | Saves the game on the phone so it works offline |
 | `icon.svg`, `icons/` | The app icon at the sizes phones need |
+| `Dockerfile`, `nginx.conf` | Runs the game as a container, for ngrok Ship or any container host |
 
 To add or change fun facts, edit the `FACTS` list in `index.html`.
