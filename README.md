@@ -1,6 +1,6 @@
 # 🌭 Chicago Dog Stack (mobile)
 
-A cute cartoon hot dog stacking game for phones. Swipe to slide your hot dog along the sidewalk, catch the falling Chicago-dog toppings, and stack them up to the **ORDER UP!** line to serve each dog. Never, ever catch the ketchup.
+A cute cartoon hot dog stacking game for phones and computers. Swipe or use the arrow keys to slide your hot dog along the sidewalk, catch the falling Chicago-dog toppings, and stack them up to the **ORDER UP!** line to serve each dog. Never, ever catch the ketchup.
 
 - **Seven levels at Chicago landmarks:** Willis Tower, the Bean, Navy Pier, Wrigley Field, Buckingham Fountain, the Riverwalk, and an endless final level that climbs past the clouds into outer space.
 - **50 fun facts** about Chicago and hot dogs. Glowing 💡 bubbles drop in every 12 to 28 seconds, and you get a fact each time you serve a dog. The facts come in a shuffled order, and you see facts you haven't found yet before any repeats. The game keeps count of how many you've found.
@@ -22,9 +22,16 @@ It then has its own icon, opens full screen without the browser bar, and works w
 
 ## How to play
 
-- **Swipe** left and right anywhere on the game to move the hot dog. On a computer, use the arrow keys or A and D.
-- **Tap** to start, and use the round button in the top-right corner to pause. You can also press Space on a computer. The game pauses by itself when you switch apps.
-- The button in the top-left corner turns sound and vibration on or off.
+- The game shows instructions for how you're playing: keys on a computer, touch on a phone. If you plug a keyboard into a tablet, it switches when you press a key.
+
+| | Phone or tablet | Computer |
+| --- | --- | --- |
+| Move | Swipe left and right anywhere on the game | Hold ← → or A and D (or drag with the mouse) |
+| Start or resume | Tap | Space or Enter (or click) |
+| Pause | Round button, top right | P or Esc, or Space |
+| Sound and vibration on/off | Round button, top left | M |
+
+- The game pauses by itself when you switch apps or tabs.
 - Stack toppings until they reach the **ORDER UP!** line. That serves the dog and moves you to the next level, which starts again with a plain hot dog.
 - Catching a topping off-center makes the stack lean. If it leans too far, it topples. Tall stacks wobble, and moving fast makes it worse.
 - You have 5 lives (the hot dogs in the top-right corner). You lose one for dropping a topping, catching ketchup or toppling the stack. A rare **golden frank** gives one back.

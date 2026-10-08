@@ -43,7 +43,7 @@
 </style>
 </head>
 <body>
-<canvas id="game" aria-label="Chicago Dog Stack game. Swipe left and right to move the hot dog."></canvas>
+<canvas id="game" aria-label="Chicago Dog Stack game. Swipe, or use the arrow keys, to move the hot dog."></canvas>
 <div id="fact" role="status" aria-live="polite">
   <span class="bulb">💡</span>
   <span><span id="factText">Catch the glowing 💡 bubbles for Chicago and hot dog fun facts!</span><span class="count" id="factCount"></span></span>
@@ -899,12 +899,16 @@ function draw() {
     ctx.globalAlpha = 1;
   }
   const found = `💡 ${foundFacts.size} of ${FACTS.length} fun facts found`;
+  // Show keyboard or touch instructions, depending on how you're playing.
+  const go = usingKeys ? 'Press Space' : 'Tap';
   if (G.state === 'title') overlay('Chicago Dog Stack', [
-    'Swipe left and right to move.', 'Catch mustard, onions, relish,', 'tomato, pickles, sport peppers', '& celery salt. Dodge the ketchup!',
-    '', 'Stack to the ORDER UP line', 'to serve each dog.', 'Catch 💡 bubbles for fun facts!', '', 'Tap to start', found]);
-  if (G.state === 'paused') overlay('Paused', ['Tap to keep stacking', '', found]);
+    usingKeys ? 'Use ← → or A and D to move.' : 'Swipe left and right to move.',
+    'Catch mustard, onions, relish,', 'tomato, pickles, sport peppers', '& celery salt. Dodge the ketchup!',
+    '', 'Stack to the ORDER UP line', 'to serve each dog.', 'Catch 💡 bubbles for fun facts!', '', `${go} to start`, found]);
+  if (G.state === 'paused') overlay('Paused', [`${go} to keep stacking`,
+    ...(usingKeys ? ['P or Esc pauses · M turns sound on/off'] : []), '', found]);
   if (G.state === 'over') overlay('Stand closed!', [`You caught ${G.caught} toppings`, `and served ${G.served} ${G.served === 1 ? 'dog' : 'dogs'}.`,
-    G.caught >= G.best && G.caught > 0 ? '🎉 New best! 🎉' : `Best: ${G.best}`, '', 'Tap to play again', found]);
+    G.caught >= G.best && G.caught > 0 ? '🎉 New best! 🎉' : `Best: ${G.best}`, '', `${go} to play again`, found]);
 }
 
 // Sound and pause buttons, drawn as shapes so they look the same on every phone.
@@ -963,7 +967,9 @@ function beep(freq, dur, type = 'triangle') {
 function buzz(pattern) { if (soundOn) try { navigator.vibrate?.(pattern); } catch {} }
 
 // ---------------------------------------------------------------------------
-// Controls: swipe anywhere on the game (phones), arrow keys or A/D (computers)
+// Controls: swipe anywhere on the game (phones), arrow keys or A/D (computers).
+// usingKeys switches the on-screen instructions to whichever you used last.
+let usingKeys = matchMedia('(hover: hover) and (pointer: fine)').matches;
 // ---------------------------------------------------------------------------
 const SWIPE = 1.5; // how far the hot dog moves per finger movement
 const held = { left: false, right: false };
@@ -976,6 +982,7 @@ const hitBtn = (p, b) => Math.hypot(p.x - b.x, p.y - b.y) <= b.r + 10;
 canvas.addEventListener('pointerdown', (e) => {
   e.preventDefault();
   unlockAudio();
+  usingKeys = e.pointerType === 'mouse';
   const p = toScreen(e);
   if (hitBtn(p, BTN.sound)) { soundOn = !soundOn; store.set('dogstack-mobile.sound', soundOn); return; }
   if (hitBtn(p, BTN.pause) || G.state !== 'playing') { startOrPause(); return; }
@@ -992,10 +999,14 @@ canvas.addEventListener('pointermove', (e) => {
 for (const ev of ['pointerup', 'pointercancel']) canvas.addEventListener(ev, (e) => { if (drag && e.pointerId === drag.id) drag = null; });
 
 window.addEventListener('keydown', (e) => {
+  if (e.metaKey || e.ctrlKey || e.altKey) return; // leave browser shortcuts alone
   if (['ArrowLeft', 'KeyA'].includes(e.code)) held.left = true;
   else if (['ArrowRight', 'KeyD'].includes(e.code)) held.right = true;
-  else if (['Space', 'Enter', 'KeyP'].includes(e.code) && !e.repeat) { unlockAudio(); startOrPause(); }
+  else if (['Space', 'Enter'].includes(e.code) && !e.repeat) { unlockAudio(); startOrPause(); }
+  else if (['KeyP', 'Escape'].includes(e.code) && !e.repeat) { if (G.state === 'playing' || G.state === 'paused') startOrPause(); }
+  else if (e.code === 'KeyM' && !e.repeat) { unlockAudio(); soundOn = !soundOn; store.set('dogstack-mobile.sound', soundOn); }
   else return;
+  usingKeys = true;
   e.preventDefault();
 });
 window.addEventListener('keyup', (e) => {

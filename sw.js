@@ -1,6 +1,6 @@
 // Lets Chicago Dog Stack open offline once it's been loaded (and makes it installable).
 // Bump CACHE whenever any file below changes, so phones pick up the new version.
-const CACHE = 'dogstack-v1';
+const CACHE = 'dogstack-v2';
 const FILES = ['./', './index.html', './manifest.webmanifest', './icon.svg',
   './icons/icon-192.png', './icons/icon-512.png', './icons/icon-maskable-512.png', './icons/apple-touch-icon.png'];
 
